@@ -1,10 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Thu Mar 19 11:49:20 2026
-
-@author: Ha Ho
-"""
-
 import streamlit as st
 import pandas as pd
 import io
@@ -41,7 +34,6 @@ def extract_docx_to_df(docx_file):
     
     df = pd.DataFrame(data)
     
-    # Smart Shuffle Logic
     def analyze(row):
         opts = [str(row[c]) for c in df.columns if c.startswith("Option") and pd.notna(row[c]) and str(row[c]).strip() != ""]
         all_opts_text = " ".join(opts).lower()
@@ -60,40 +52,28 @@ def extract_docx_to_df(docx_file):
     return df.reindex(columns=cols).fillna("")
 
 # --- STEP 2: SHUFFLE LOGIC ---
-def shuffle_to_excel(input_template, output_excel, num_versions=3):
-    # 1. Load the original teacher-filled data
-    df_original = pd.read_excel(input_template, sheet_name="Exam Data")
-    
-    # --- CHANGE 1: Detect the maximum width of the exam ---
-    # This finds all 'Option' columns (A, B, C, D, E, etc.)
+# FIXED: Changed input_template to df_original to accept the dataframe directly from UI
+def shuffle_to_excel(df_original, num_versions=3):
     opt_cols = sorted([c for c in df_original.columns if c.startswith("Option")])
     max_opt_count = len(opt_cols)
-    
-    # We will use this to track answers for the Master Key
     master_key_data = []
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         for v in range(1, num_versions + 1):
-            # Convert to list of dicts for shuffling
             rows = df_original.to_dict(orient='records')
-            
-            # We want to keep track of original question IDs for the master key
-            # If your Excel doesn't have a unique ID, we use the original row index
             for idx, row in enumerate(rows):
                 row['_original_id'] = idx + 1
             
             random.shuffle(rows)
-            
             version_data = []
-            version_answers = {} # Stores {Original_Q_Num: New_Letter}
+            version_answers = {}
 
             for i, q in enumerate(rows, 1):
                 current_opts = []
                 correct_txt = None
                 ans_key = str(q.get('Correct Answer', '')).strip().upper()
 
-                # Collect valid option text
                 for col in opt_cols:
                     val = str(q[col]).strip()
                     if val and val != "nan" and val != "":
@@ -101,34 +81,26 @@ def shuffle_to_excel(input_template, output_excel, num_versions=3):
                         if col.endswith(ans_key): 
                             correct_txt = val
 
-                # Shuffle options if the teacher allowed it
                 should_shuffle = str(q.get('Shuffle? (Yes/No)', 'Yes')).strip().lower() == 'yes'
                 if should_shuffle:
                     random.shuffle(current_opts)
 
-                # --- CHANGE 2: Build the row with 'Elastic' padding ---
                 new_row = {"No.": i, "Question Text": q['Question Text']}
-                
-                # We always loop through the MAX count to keep columns aligned
                 for index in range(max_opt_count):
                     letter = chr(65 + index)
                     if index < len(current_opts):
                         new_row[f"Option {letter}"] = current_opts[index]
                     else:
-                        new_row[f"Option {letter}"] = "" # Blank spacer
+                        new_row[f"Option {letter}"] = "" 
 
-                # Re-map the correct letter
                 new_key = ""
                 if correct_txt in current_opts:
                     new_key = chr(65 + current_opts.index(correct_txt))
                 
                 new_row["Correct Key"] = new_key
                 version_data.append(new_row)
-                
-                # Track for Master Key
                 version_answers[q['_original_id']] = new_key
 
-            # --- CHANGE 3: Standardize Column Order before saving ---
             standard_columns = ["No.", "Question Text"] + opt_cols + ["Correct Key"]
             df_v = pd.DataFrame(version_data)
             df_v = df_v.reindex(columns=standard_columns).fillna("")
@@ -136,30 +108,24 @@ def shuffle_to_excel(input_template, output_excel, num_versions=3):
             sheet_name = f"Version {v}"
             df_v.to_excel(writer, sheet_name=sheet_name, index=False)
             
-            # Formatting the sheet
             worksheet = writer.sheets[sheet_name]
-            worksheet.set_column('B:B', 55) # Wide Question Text
-            worksheet.set_column('C:H', 22) # Option columns
-            worksheet.set_column('I:I', 12) # Correct Key column
+            worksheet.set_column('B:B', 55) 
+            worksheet.set_column('C:H', 22) 
+            worksheet.set_column('I:I', 12) 
             
-            # Add this version's answers to the master list
             version_answers['Version'] = f"Version {v}"
             master_key_data.append(version_answers)
 
-        # --- STEP 4: Create the Master Key Summary Sheet ---
         df_master = pd.DataFrame(master_key_data)
-        # Move 'Version' column to the front
         cols = ['Version'] + [c for c in df_master.columns if c != 'Version']
         df_master = df_master[cols]
-        
         df_master.to_excel(writer, sheet_name="MASTER KEY", index=False)
         
-    return output.getvalue()
+    return output.getvalue() # CRITICAL: Return the binary data
 
 # --- STREAMLIT UI ---
 st.set_page_config(page_title="OB Exam Automator", layout="wide")
 st.title("📝 OB Exam Automator")
-st.markdown("### Securely extract, review, and shuffle exam versions.")
 
 col1, col2 = st.columns(2)
 
@@ -180,11 +146,18 @@ with col2:
     num_v = st.slider("Number of versions", 1, 10, 3)
     
     if uploaded_excel:
+        # FIXED: Removed 'if st.button' to prevent page refresh errors in some Streamlit versions
+        # Or you can keep it, but ensure the logic inside is correct.
         if st.button("🚀 Generate Shuffled Versions"):
-            df_to_shuffle = pd.read_excel(uploaded_excel)
-            final_file = shuffle_to_excel(df_to_shuffle, num_v)
-            st.success(f"Generated {num_v} versions!")
-            st.download_button("📥 Download Final Shuffled Exam", data=final_file, file_name="Shuffled_Exam_Versions.xlsx")
+            try:
+                # Load the data first
+                df_to_shuffle = pd.read_excel(uploaded_excel, sheet_name="Exam Data")
+                # Call the function passing the DATAFRAME, not the file object
+                final_file = shuffle_to_excel(df_to_shuffle, num_v)
+                st.success(f"Generated {num_v} versions!")
+                st.download_button("📥 Download Final Shuffled Exam", data=final_file, file_name="Shuffled_Exam_Versions.xlsx")
+            except Exception as e:
+                st.error(f"Error: Ensure your sheet is named 'Exam Data'. Details: {e}")
 
 st.divider()
-st.info("🔒 **Privacy Note:** No files are stored on this server. All processing happens in temporary memory.")
+st.info("🔒 **Privacy Note:** No files are stored on this server. Processing happens in temporary memory.")
