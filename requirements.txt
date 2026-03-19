@@ -1,0 +1,9 @@
+streamlit
+
+pandas
+
+docx2python
+
+xlsxwriter
+
+openpyxl
