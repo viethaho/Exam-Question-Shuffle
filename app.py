@@ -60,38 +60,100 @@ def extract_docx_to_df(docx_file):
     return df.reindex(columns=cols).fillna("")
 
 # --- STEP 2: SHUFFLE LOGIC ---
-def shuffle_to_excel(input_df, num_versions):
+def generate_multi_version_excel(input_template, output_excel, num_versions=3):
+    # 1. Load the original teacher-filled data
+    df_original = pd.read_excel(input_template, sheet_name="Exam Data")
+    
+    # --- CHANGE 1: Detect the maximum width of the exam ---
+    # This finds all 'Option' columns (A, B, C, D, E, etc.)
+    opt_cols = sorted([c for c in df_original.columns if c.startswith("Option")])
+    max_opt_count = len(opt_cols)
+    
+    # We will use this to track answers for the Master Key
+    master_key_data = []
+
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         for v in range(1, num_versions + 1):
-            rows = input_df.to_dict(orient='records')
+            # Convert to list of dicts for shuffling
+            rows = df_original.to_dict(orient='records')
+            
+            # We want to keep track of original question IDs for the master key
+            # If your Excel doesn't have a unique ID, we use the original row index
+            for idx, row in enumerate(rows):
+                row['_original_id'] = idx + 1
+            
             random.shuffle(rows)
+            
             version_data = []
+            version_answers = {} # Stores {Original_Q_Num: New_Letter}
+
             for i, q in enumerate(rows, 1):
-                opt_cols = sorted([c for c in input_df.columns if c.startswith("Option")])
                 current_opts = []
                 correct_txt = None
                 ans_key = str(q.get('Correct Answer', '')).strip().upper()
 
+                # Collect valid option text
                 for col in opt_cols:
                     val = str(q[col]).strip()
                     if val and val != "nan" and val != "":
                         current_opts.append(val)
-                        if col.endswith(ans_key): correct_txt = val
+                        if col.endswith(ans_key): 
+                            correct_txt = val
 
-                if str(q.get('Shuffle? (Yes/No)', 'Yes')).strip().lower() == 'yes':
+                # Shuffle options if the teacher allowed it
+                should_shuffle = str(q.get('Shuffle? (Yes/No)', 'Yes')).strip().lower() == 'yes'
+                if should_shuffle:
                     random.shuffle(current_opts)
 
+                # --- CHANGE 2: Build the row with 'Elastic' padding ---
                 new_row = {"No.": i, "Question Text": q['Question Text']}
-                for j in range(len(current_opts)):
-                    new_row[f"Option {chr(65+j)}"] = current_opts[j]
                 
-                new_key = chr(65 + current_opts.index(correct_txt)) if correct_txt in current_opts else ""
+                # We always loop through the MAX count to keep columns aligned
+                for index in range(max_opt_count):
+                    letter = chr(65 + index)
+                    if index < len(current_opts):
+                        new_row[f"Option {letter}"] = current_opts[index]
+                    else:
+                        new_row[f"Option {letter}"] = "" # Blank spacer
+
+                # Re-map the correct letter
+                new_key = ""
+                if correct_txt in current_opts:
+                    new_key = chr(65 + current_opts.index(correct_txt))
+                
                 new_row["Correct Key"] = new_key
                 version_data.append(new_row)
+                
+                # Track for Master Key
+                version_answers[q['_original_id']] = new_key
 
-            df_v = pd.DataFrame(version_data).fillna("")
-            df_v.to_excel(writer, sheet_name=f"Version {v}", index=False)
+            # --- CHANGE 3: Standardize Column Order before saving ---
+            standard_columns = ["No.", "Question Text"] + opt_cols + ["Correct Key"]
+            df_v = pd.DataFrame(version_data)
+            df_v = df_v.reindex(columns=standard_columns).fillna("")
+            
+            sheet_name = f"Version {v}"
+            df_v.to_excel(writer, sheet_name=sheet_name, index=False)
+            
+            # Formatting the sheet
+            worksheet = writer.sheets[sheet_name]
+            worksheet.set_column('B:B', 55) # Wide Question Text
+            worksheet.set_column('C:H', 22) # Option columns
+            worksheet.set_column('I:I', 12) # Correct Key column
+            
+            # Add this version's answers to the master list
+            version_answers['Version'] = f"Version {v}"
+            master_key_data.append(version_answers)
+
+        # --- STEP 4: Create the Master Key Summary Sheet ---
+        df_master = pd.DataFrame(master_key_data)
+        # Move 'Version' column to the front
+        cols = ['Version'] + [c for c in df_master.columns if c != 'Version']
+        df_master = df_master[cols]
+        
+        df_master.to_excel(writer, sheet_name="MASTER KEY", index=False)
+        
     return output.getvalue()
 
 # --- STREAMLIT UI ---
