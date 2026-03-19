@@ -60,7 +60,7 @@ def extract_docx_to_df(docx_file):
     return df.reindex(columns=cols).fillna("")
 
 # --- STEP 2: SHUFFLE LOGIC ---
-def generate_multi_version_excel(input_template, output_excel, num_versions=3):
+def shuffle_to_excel(input_template, output_excel, num_versions=3):
     # 1. Load the original teacher-filled data
     df_original = pd.read_excel(input_template, sheet_name="Exam Data")
     
